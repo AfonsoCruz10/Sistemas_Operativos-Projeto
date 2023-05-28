@@ -1,226 +1,302 @@
-#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <fcntl.h>
-#include <errno.h>
+#include <unistd.h>
 #include <string.h>
-#include <sys/wait.h>
-#include <stdlib.h>
-#include <sys/types.h>
-#include <sys/stat.h>
+#include <errno.h>
 #include <sys/time.h>
 
-#define MAX_ARGS 256
-#define MAX_BUFFER 4096
-#define MIN_BUFFER 10	
+typedef struct cliente{
 
-int execProg(char *program, int argc, char **args){
+    int pid;
+    char programas[40];
+    struct timeval inicial;
+    struct timeval final;
+    int tipo_status; // 0-ainda não acabado e 1-acabado
 
-	pid_t pid;
+} Cliente;
 
-	struct timeval time_inicio;
-	struct timeval time_fim;
-
-	int fd = open("../tmp/fifo", O_WRONLY);
-
-	if (fd == -1){
-		perror("open default pipe");
-		return 1;
-	}
-
-	if ((pid = fork()) == 0) {
-
-		execvp(program, args);
-		perror("error executing the program");
-		exit(1);
-	}
-
-	else if (pid > 0){
-		char pid_pipe_name[MIN_BUFFER];
-		sprintf(pid_pipe_name, "%d", pid);
-
-		char myfifo[MIN_BUFFER];
-		snprintf(myfifo, MIN_BUFFER, "../tmp/%.*s", MIN_BUFFER - 8, pid_pipe_name);
-
-		if(mkfifo(myfifo, 0666)< 0) perror("mkfifo error");
-
-		int n1 = write(fd,pid_pipe_name,sizeof(pid_pipe_name));
-
-		if(n1 == -1){
-			perror("write default Pipe");
-			close(fd);
-			return 1;
-		}
-		close(fd);
-
-		char buffer[MAX_BUFFER];
-
-		char pid_str[MIN_BUFFER];
-		sprintf(pid_str, "%d", pid);
-
-		char nome[MIN_BUFFER];
-		strcpy(nome,args[0]);
-
-		char time_inicio_str[MIN_BUFFER];
-		gettimeofday(&time_inicio, NULL);
-		sprintf(time_inicio_str,"%ld", time_inicio.tv_sec*1000000 + time_inicio.tv_usec);
-
-		char time_fim_str[MIN_BUFFER];
-		sprintf(time_fim_str, "%d", 0);
-
-		char estado[MIN_BUFFER];
-		strcpy(estado, "executing");
-
-		snprintf(buffer, MAX_BUFFER, "%s;%s;%s;%s;%s;", pid_str, nome, time_inicio_str, time_fim_str,estado);
-
-		int fd_pid = open(myfifo,O_WRONLY);
-		if(fd_pid == -1){
-			perror("open specific pipe");
-			return 1;
-		}
-
-		int n2 = write(fd_pid,buffer, sizeof(buffer));
-
-		if(n2 == -1){
-			perror("write to specific pipe");
-			close(fd_pid);
-			return 1;
-		}
-
-		else{
-			close(fd_pid);
-			printf("o programa com o PID %d esta prestes a ser executado\n", pid );
-		}
-		sleep(10);
-
-		int status;
-		waitpid(pid, &status, 0);
-
-		if(WIFEXITED(status)){
-			int i = 0;
-			int x = 0;
-			while(buffer[i] && x<3){
-				if(buffer[i]== ';') x++;
-				i++;
-			};
-			buffer[i] = '\0';
-
-			char time_fim_str_new[MIN_BUFFER];
-			gettimeofday(&time_fim,NULL);
-			sprintf(time_fim_str_new, "%ld", time_fim.tv_sec*1000000 + time_fim.tv_usec);
-
-			char estado_new[MIN_BUFFER];
-			sprintf(estado_new, "finished");
-
-			snprintf(buffer + strlen(buffer), MAX_BUFFER - strlen(buffer), "%s;%s;", time_fim_str_new,estado_new);
-
-			int fd = open("../tmp/fifo", O_WRONLY);
-
-			if( fd == -1){
-				perror("open default pipe");
-				return 1;
-			}
-
-
-			n1 = write(fd,pid_pipe_name,sizeof(pid_pipe_name));
-
-			if ( n1 == -1){
-				perror("write to default pipe");
-				close(fd);
-				return 1;
-			}
-
-			close(fd);
-
-			int fd_pid = open(myfifo, O_WRONLY);
-
-			if(fd_pid == -1){
-				perror("open specific pipe");
-				return 1;
-			}
-
-			int n3= write(fd_pid, buffer, sizeof(buffer));
-
-			if(n3== -1){
-				perror("write to specific pipe");
-				close(fd_pid);
-				return 1;
-			}
-			close(fd_pid);
-
-			long time_spent = ((time_fim.tv_sec)*1000000 + time_fim.tv_usec)- ((time_inicio.tv_sec)*1000000 + time_inicio.tv_usec);
-			printf("O programa este em execucao durante %ld milisegundos. \n ", time_spent/1000);
-			return WEXITSTATUS(status);
-
-		} else{
-			printf("error: program terminated abnormally\n");
-			return 1;
-		}
-	}
-	else{
-		perror("fork");
-		return 1;
-	}
-	return 1;
+//adiciona um cliente da esrrutura Cliente
+Cliente addclient(int pid, char s[40], struct timeval tempo_inicial, struct timeval  tempo_final, int t){
+    Cliente c;
+    c.pid = pid;
+    strcpy(c.programas,s);
+    c.inicial = tempo_inicial;
+    c.final = tempo_final;
+    c.tipo_status=t;
+    return c;
 }
 
-int execStatus(){
+void executar(int argc, char* argv[]) {
 
-	char statusBuffer[MAX_BUFFER];
-	int n_status2;
+    char *execvp_args[40];
+    int args=0;
+    int i=3;
+    
+    //Tempo inicial
+    struct timeval start, end;
+    gettimeofday(&start,NULL);
 
-	int fd = open("../tmp/fifo", O_WRONLY);
+    // Cria uma lista de strings onde no indice 0 é o comando a executar, depois os argumentos e por ultimo NULL 
+    while(i<argc){
+        execvp_args[args]= strdup(argv[i]);
+        i++;
+        args++;
+    }
 
-	if( fd== -1){
-		perror("open deafult pipe");
-		return 1;
+    execvp_args[args] = NULL;
+    
+    //Cria um processo
+    pid_t fork_ret = fork();
 
-	}
+    if(fork_ret == -1){
+        perror("Erro ao criar fork");
+        exit(-1);
+    }
 
-	char * myfifoStatus = "../tmp/status";
-	mkfifo(myfifoStatus, 0666);
+    if(fork_ret == 0) {
+        // Processo filho
 
-	char myStatus[MIN_BUFFER];
-	snprintf(myStatus, MIN_BUFFER, "%s", "status");
+        //pid do pai
+        int pid = getppid();
+        gettimeofday(&end,NULL);
+        Cliente c2 = addclient(pid ,execvp_args[0],start,end, 0);
+        
+        int fd = open("../tmp/fifo_pid",O_WRONLY);
+        if(fd == -1){
+            perror("Erro em abrir fifo_pid");
+            exit(-1);
+        }
+        if( write(fd, &c2, sizeof(c2)) ==-1){
+            perror("Erro ao escrever em fifo_pid");
+            exit(-1);
+        }
+        close(fd);
 
-	int n_status = write(fd, myStatus, sizeof(myStatus));
+        printf("-------------------\n");
+        printf("Processo id: %d\n", pid);
+        printf("Resultado: \n\n");
+        
+        // Executar o comado dado pelo utilizador
+        int err = execvp(execvp_args[0], execvp_args);
 
-	if(n_status == -1){
-		perror("write to default pipe");
-		close(fd);
-		return 1;
-	}
-	close(fd);
+        if (err == -1){
+            perror("Erro no exec");
+            _exit(-1);
+        }
 
-	int fd_status = open("../tmp/status", O_WRONLY);
+    } else {
+        //Processo pai 
 
-	if (fd_status == -1){
-		perror("open status pipe");
-		return 1;
-	}
-	while((n_status2 = read(fd_status,statusBuffer, sizeof(statusBuffer)))>0){
-		printf("%s\n",statusBuffer);
+        int pid=getpid();
+        //transformar pid para string
+        char fifoip_s[40];
+		sprintf(fifoip_s, "../tmp/%d", pid);
 
-	}
-	close(fd_status);
-	return 1;
+        int wstatus;
+        //epera pelo processo filho terminar
+        wait(&wstatus);
+
+        //Verifica se o processo filho devolveu algo e se o q devolveu é diferente de -1, é o q devolve se o execvp não executar corretamente 
+        if(WIFEXITED(wstatus)) {
+            int statuscode = WEXITSTATUS(wstatus);
+            if (statuscode == -1){
+                perror("Falha");
+            }
+
+            gettimeofday(&end,NULL);
+            Cliente c2 = addclient(pid, execvp_args[0], start, end, 1);
+            // Abre o fifo da pasta tmp com o nome do pid e manda para o servidor o um cliente que contem as informaçoes do comando, tempo, pid e status
+            int fd_ip2 = open(fifoip_s,O_WRONLY);
+
+            if(fd_ip2 == -1){
+                perror("Erro ao abrir fd_pid2");
+                exit(-1);
+            }
+            if(write(fd_ip2, &c2, sizeof(c2)) == -1){
+                perror ("Error em escrever no fd_pid2");
+                _exit(-1);
+            }
+            close(fd_ip2);
+            
+            printf("\nTempo de duracao da execucao do programa: %ldms\n",(c2.final.tv_sec - c2.inicial.tv_sec) * 1000 + (c2.final.tv_usec - c2.inicial.tv_usec) / 1000);
+            printf("-------------------\n");
+
+        }
+    }
 }
 
+void execstatus(){
+    char string[1000];
 
-int main(int argc, char const *argv[]){
+    //Abre fifo status e le a enviada pelo servidor
+    int fd_status = open("../tmp/status", O_RDONLY);
+    if(fd_status==-1){
+        perror("Erro ao abrir status");
+        _exit(-1);
+    }
+    if((read(fd_status, string , sizeof(string)))==-1){
+        perror("Erro ao ler status time");
+        _exit(-1);
+    }
+    close(fd_status);
 
-	if((strcmp(argv[1], "execute")== 0) && (strcmp(argv[2], "-u")== 0)){
-		char *program = argv[3];
-		char *args[MAX_ARGS];
-		int i;
-		for(i= 0; i<MAX_ARGS-1 && i+3 < argc; i++){
-			args[i] = argv[i + 3];
-		}
-		args[i] = NULL;
-		execProg(program, argc-3,args);
-	}
+    //escreve para o standar output a string recebida pelo monitor
+    if (write(1, string , strlen(string))==-1){
+        perror("Erro ao escrever em terminal");
+        _exit(-1);
+    }
+}
 
-	else if
-		(strcmp(argv[1], "status")==0){
-			execStatus();
-		}
+//conecta strings separados por virgulas
+void strpid(char* s,int c, char* v[]){
+    int i=2;
+    while ( i < c){
+        strcat(s, v[i]);
+        if (i != c - 1) strcat(s, ";");
+        i++;
+    } 
+}
+
+// comando avançado 
+void statustime( int argc, char* argv[]){ 
+
+    char string[50]="";
+    char string_print[100];
+    
+    //conectas os pids separando-os por ponto e virgulas
+    strpid(string, argc, argv);
+
+    int fifo = mkfifo("../tmp/status_time_write",0666);  
+    if( fifo == -1 && errno != EEXIST){
+        perror("Erro ao criar o fifo ");
+        _exit(1);
+    }
+
+    //Abre fifo status time e escreve uma string com os pid
+    int fd_statuswrite = open("../tmp/status_time_read", O_WRONLY);
+    if(fd_statuswrite==-1){
+        perror("Erro ao abrir status time write");
+        _exit(-1);
+    }
+    if(write(fd_statuswrite, string , strlen(string))==-1){
+        perror("Erro ao escrever em status time write");
+        _exit(-1);
+    }
+    close(fd_statuswrite);
+
+
+    //Abre fifo 
+    int fd_statusread = open("../tmp/status_time_write", O_RDONLY);
+    if(fd_statusread==-1){
+        perror("Erro ao abrir status time read");
+        _exit(-1);
+    }
+    if(read(fd_statusread, string_print , sizeof(string_print))==-1){
+        perror("Erro ao escrever status time read");
+        _exit(-1);
+    }
+    close(fd_statusread);
+    
+    //Escrever no terminal a string print
+    if(write( 1, string_print , strlen(string_print))==-1){
+        perror("Erro ao escrever no terminal");
+        _exit(-1);
+    }
+}
+    
+
+int main(int argc, char* argv[]) {
+
+    //execução de programa inividual
+    if (argc > 3 && (strcmp(argv[1],"execute")==0) && (strcmp(argv[2],"-u")==0) ){
+
+        //Abre o fifo_main criado pelo servidor e manda para o servidor o tipo de execute, neste caso "-u"
+        int fd_main = open("../tmp/fifo_main",O_WRONLY);
+
+        if(fd_main == -1){
+            perror("Erro em abrir fifo_main\n");
+            exit(-1);
+        }
+        if(write(fd_main, "-u", strlen("-u")) == -1){
+            perror("Erro ao abrir fifo_main");
+            _exit(-1);
+        }
+        close(fd_main);
+
+        executar(argc,argv);
+
+    // não acabado    
+    // execução de uma pipeline de programas
+    }else if(argc > 3 && (strcmp(argv[1],"execute")==0) && (strcmp(argv[2],"-p")==0)){
+        int fd_main = open("../tmp/fifo_main",O_WRONLY);
+
+        if(fd_main == -1){
+            perror("Erro em abrir fifo_main\n");
+            exit(-1);
+        }
+
+        if(write(fd_main, "-p", strlen("-p")) == -1){
+            perror("Erro ao abrir fifo_main");
+            _exit(-1);
+        }
+        close(fd_main);
+
+    //executar stautus
+    }else if(argc > 1 && (strcmp(argv[1],"status")==0)){
+
+        //Abre o fifo_main criado pelo servidor e manda para o servidor o tipo de execute, neste caso "status"
+        int fd_main = open("../tmp/fifo_main",O_WRONLY);
+
+        if(fd_main == -1){
+            perror("Erro em abrir fifo_main\n");
+            exit(-1);
+        }
+        if(write(fd_main, "status", strlen("status")) == -1){
+            perror("Erro ao abrir fifo_main");
+            _exit(-1);
+        }
+        close(fd_main);
+        execstatus();
+
+    //programa avançado
+    //executar stautus-time
+    }else if(argc > 2 && (strcmp(argv[1],"status-time")==0)){
+
+        //Abre o fifo_main criado pelo servidor e manda para o servidor o tipo de execute, neste caso "status"
+        int fd_main = open("../tmp/fifo_main",O_WRONLY);
+
+        if(fd_main == -1){
+            perror("Erro em abrir fifo_main\n");
+            exit(-1);
+        }
+        if(write(fd_main, "statustime", strlen("statustime")) == -1){
+            perror("Erro ao abrir fifo_main");
+            _exit(-1);
+        }
+        close(fd_main);
+        statustime(argc,argv);
+
+    //desligar o servidor
+    }else if(argc > 1 && (strcmp(argv[1],"sair")==0)){
+
+        //Abre o fifo_main criado pelo servidor e manda para o servidor "sair" para desligar o servidor
+        int fd_main = open("../tmp/fifo_main",O_WRONLY);
+
+        if(fd_main == -1){
+            perror("Erro em abrir fifo_main\n");
+            exit(-1);
+        }
+        if(write(fd_main, "sair", strlen("sair")) == -1){
+            perror("Erro ao abrir fifo_main");
+            _exit(-1);
+        }
+        close(fd_main);
+    }else{
+        printf("Argumentos invalidos!!\n");
+    }
+	return 0;
 }
